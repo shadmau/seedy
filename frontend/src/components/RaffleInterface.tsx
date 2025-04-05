@@ -963,10 +963,14 @@ export function RaffleInterface() {
                             console.log(`[${timestamp}] hasWon Result:`, wonResult);
                             // --- End hasWon Call ---
 
+                            // --- Store parameters for potential finalization ---
+                            setFinalizationParams({ yHex, proofHex, seedResult });
+                            // --- End Store ---
+
                             // --- Update State based on hasWon result ---
                             setRaffleStatus(RaffleStatus.SOLVED); // Set status to Solved
                             setHasWonResult(wonResult as boolean); // Set the win result state
-                            setIsSolving(false); // Stop loading indicator
+                            setIsSolving(false); // Stop loading indicator *after* storing params
                             // --- End State Update ---
 
                         } catch (verifyOrHasWonError) { // Catch errors from verification OR hasWon call

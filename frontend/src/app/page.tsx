@@ -7,7 +7,7 @@ import { RaffleInterface } from '@/components/RaffleInterface';
 import { AboutSection } from '@/components/AboutSection';
 
 export default function Home() {
-  const { isConnected } = useAccount();
+  useAccount();
 
   return (
     <main className="min-h-screen">

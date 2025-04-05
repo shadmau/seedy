@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useChainId, usePublicClient } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useChainId, usePublicClient, useBalance } from 'wagmi';
 import { RAFFLE_CONTRACT_ADDRESS, RAFFLE_ABI } from '../contracts/raffleContract';
 import { SEEDY_COORDINATOR_ADDRESS, SEEDY_COORDINATOR_ABI } from '../contracts/coordinatorContract';
 import { SEEDY_VERIFIER_ADDRESS, SEEDY_VERIFIER_ABI } from '../contracts/verifierContract';
@@ -16,7 +16,6 @@ import { generateProof, bytesInputToBigInt } from '../utils/vdf';
 const PREDEFINED_AMOUNTS = [0.0001, 0.05, 0.1, 0.5];
 const HOUSE_EDGE = 0.975; // 2.5% house edge
 const REFETCH_INTERVAL = 5000; // 5 seconds for status refetching
-const IS_DEVELOPMENT = process.env.NODE_ENV === 'development'; // Check for dev mode
 const BLOCK_POLL_INTERVAL_MS = 1000; // Check block number every 1 second
 
 // --- Enums ---
@@ -92,6 +91,12 @@ export function RaffleInterface() {
   const chainId = useChainId();
   const publicClient = usePublicClient(); // For getting block number
   const [isClientMounted, setIsClientMounted] = useState(false); // Hydration fix state
+  
+  // Fetch the contract's balance
+  const { data: poolBalanceData, refetch: refetchPoolBalance } = useBalance({
+    address: RAFFLE_CONTRACT_ADDRESS,
+    chainId: baseSepolia.id, // Ensure we're checking balance on the correct chain
+  });
   
   // --- Custom window size hook without external dependency ---
   const windowSize = useWindowSize();
@@ -349,6 +354,18 @@ export function RaffleInterface() {
       }
     };
   }, [isRealRaffleId, displayRaffleId, raffleStatus, refetchStatus, refetchDetails]);
+
+  // Periodically refetch pool balance
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      if (isCorrectNetwork) {
+        console.log("Refetching pool balance...");
+        refetchPoolBalance();
+      }
+    }, REFETCH_INTERVAL * 2); // Refetch less frequently than status
+
+    return () => clearInterval(intervalId);
+  }, [isCorrectNetwork, refetchPoolBalance]);
 
   // Set appropriate status in dev mode
   useEffect(() => {
@@ -667,8 +684,16 @@ export function RaffleInterface() {
       {/* Confetti Canvas - Render only on client */}
       {isClientMounted && showConfetti && <Confetti width={windowSize.width} height={windowSize.height} recycle={false} numberOfPieces={500} />}
 
-      {/* Development Mode Toggle Button (Fixed position) */}
-      {IS_DEVELOPMENT && (
+      {/* Pool Size Display in Header */}
+      <div className="text-center mb-4">
+        <span className="text-gray-400 text-sm font-medium">Total Pool: </span>
+        <span className="font-bold text-xl text-cyan-400 animate-pulse">
+          {poolBalanceData ? `${parseFloat(poolBalanceData.formatted).toFixed(4)} ${poolBalanceData.symbol}` : 'Loading...'}
+        </span>
+      </div>
+
+      {/* Development Mode Toggle Button (Fixed position) - Always hidden */}
+      {false && (
         <div className="fixed right-0 top-1/3 z-20 flex items-start">
           {/* Toggle button */}
           <button 
@@ -728,7 +753,10 @@ export function RaffleInterface() {
                  {PREDEFINED_AMOUNTS.map((amount) => (
                    <motion.button
                      key={amount}
-                     onClick={() => setSelectedAmount(amount)}
+                     onClick={() => {
+                       setSelectedAmount(amount);
+                       setIsCustomAmount(false); // Also hide custom input
+                     }}
                      className={`px-4 py-2 rounded-lg font-medium transition-all duration-200 border-2 text-sm md:text-base ${!isCustomAmount && selectedAmount === amount
                          ? 'bg-lime-600 border-lime-500 text-white shadow-lg scale-105'
                          : 'bg-gray-700 border-gray-600 text-gray-300 hover:bg-gray-600 hover:border-gray-500'

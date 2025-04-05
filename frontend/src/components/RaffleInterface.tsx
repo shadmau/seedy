@@ -88,6 +88,7 @@ function useWindowSize() {
 export function RaffleInterface() {
   // --- Hooks ---
   const { address, isConnected } = useAccount();
+  console.log("Debug: isConnected status:", isConnected);
   const chainId = useChainId();
   const publicClient = usePublicClient(); // For getting block number
   const [isClientMounted, setIsClientMounted] = useState(false); // Hydration fix state
@@ -121,6 +122,8 @@ export function RaffleInterface() {
     proofHex: `0x${string}`[];
     seedResult: `0x${string}`;
   } | null>(null);
+  const [isClaiming, setIsClaiming] = useState<boolean>(false);
+  const [isClaimedSuccessfully, setIsClaimedSuccessfully] = useState<boolean>(false);
 
   // --- Wagmi Hooks ---
   const { writeContract, data: writeData, error: writeError, reset: resetWriteContract } = useWriteContract();
@@ -266,14 +269,21 @@ export function RaffleInterface() {
          setIsFinalizingRandomness(false); // Reset loading state
          setCurrentTxHash(undefined);
          resetWriteContract();
+      } else if (isClaiming) { // Confirmed finalizeBet (Claim)
+         console.log("FinalizeBet (Claim) TX Confirmed.");
+         setIsClaiming(false); 
+         setIsClaimedSuccessfully(true);
+         setCurrentTxHash(undefined);
+        refetchDetails();
+         alert("Winnings Claimed Successfully! Play Again?"); 
       } else {
         console.log("An unknown transaction was confirmed.");
-        setCurrentTxHash(undefined);
-        resetWriteContract();
+      setCurrentTxHash(undefined);
+      resetWriteContract();
       }
     }
 
-  }, [isConfirmed, isConfirming, currentTxHash, isEntering, isSolving, raffleId, receiptData, resetWriteContract, writeContract, refetchStatus, refetchDetails, isFinalizingRandomness]); // Added isFinalizingRandomness
+  }, [isConfirmed, isConfirming, currentTxHash, isEntering, isSolving, raffleId, receiptData, resetWriteContract, writeContract, refetchStatus, refetchDetails, isFinalizingRandomness, isClaiming, setIsClaimedSuccessfully]);
 
   // Handle direct write errors (e.g., user rejection)
   useEffect(() => {
@@ -281,15 +291,19 @@ export function RaffleInterface() {
       console.error("Write error:", writeError);
       setNetworkError(formatError(writeError));
       if (isEntering) setIsEntering(false);
-      if (isSolving) setIsSolving(false); 
+      if (isSolving) setIsSolving(false);
       if (isFinalizingRandomness) {
          console.error("FinalizeRandomness write error:", writeError);
          setIsFinalizingRandomness(false); // Reset finalizing state on error
       }
+      if (isClaiming) {
+         console.error("FinalizeBet (Claim) write error:", writeError);
+         setIsClaiming(false);
+      }
       setCurrentTxHash(undefined);
       resetWriteContract(); 
     }
-  }, [writeError, isEntering, isSolving, isFinalizingRandomness, resetWriteContract]); // Added dependencies
+  }, [writeError, isEntering, isSolving, isFinalizingRandomness, isClaiming, resetWriteContract]);
 
   // Update raffle status from contract data
   useEffect(() => {
@@ -538,7 +552,9 @@ export function RaffleInterface() {
     setIsFinalizingRandomness(false); // Also reset finalizing states
     setIsRandomnessFinalized(false);
     setHasWonResult(null); // Reset win result
-    setFinalizationParams(null); // <-- Clear stored params
+    setFinalizationParams(null);
+    setIsClaiming(false);
+    setIsClaimedSuccessfully(false);
   }
 
   // --- Dev Mode Showcase Functions (Keep displayRaffleId as string) ---
@@ -610,6 +626,38 @@ export function RaffleInterface() {
       console.error(`[${timestamp}] Error preparing handleFinalizeRandomness call:`, error);
       setNetworkError(`Error publishing proof: ${formatError(error)}`); 
       setIsFinalizingRandomness(false); // Stop loading on error
+    }
+  };
+
+  // --- Handler for Claiming Winnings ---
+  const handleClaimWinnings = async () => {
+    const timestamp = new Date().toISOString();
+    if (!isConnected || !isCorrectNetwork || !raffleId || !isRandomnessFinalized) {
+      setNetworkError("Cannot claim: Wallet not connected, wrong network, missing Raffle ID, or proof not published.");
+      console.error(`[${timestamp}] Pre-check failed for claim: connected=${isConnected}, correctNetwork=${isCorrectNetwork}, raffleId=${raffleId}, finalized=${isRandomnessFinalized}`);
+      return;
+    }
+    if (isClaiming || isFinalizingRandomness) {
+        console.warn(`[${timestamp}] Claim requested while another action is in progress.`);
+        return;
+    }
+
+    setIsClaiming(true); 
+    setNetworkError(null);
+    setCurrentTxHash(undefined); 
+
+    try {
+      console.log(`[${timestamp}] Calling finalizeBet for raffleId: ${raffleId}...`);
+      writeContract({
+         address: RAFFLE_CONTRACT_ADDRESS,
+         abi: RAFFLE_ABI,
+         functionName: 'finalizeBet',
+         args: [raffleId]
+      });
+    } catch (error) {
+      console.error(`[${timestamp}] Error preparing finalizeBet call:`, error);
+      setNetworkError(`Error initiating claim: ${formatError(error)}`);
+      setIsClaiming(false); 
     }
   };
 
@@ -1015,70 +1063,91 @@ export function RaffleInterface() {
                    </div>
                  {hasWonResult === true && (
                    <>
-                     <motion.div
-                       initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                       className="bg-gradient-to-br from-green-800 to-lime-800 border border-green-600 rounded-lg p-6 mt-2 shadow-xl"
-                      >
-                        <p className="text-green-200 font-bold text-2xl animate-pulse">🎉 Bountiful Harvest! 🎉</p>
-                        <p className="text-green-300 text-sm mt-1">You Won! Publish proof to enable claim.</p>
-                      </motion.div>
+                   <motion.div
+                     initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                     className="bg-gradient-to-br from-green-800 to-lime-800 border border-green-600 rounded-lg p-6 mt-2 shadow-xl"
+                    >
+                     <p className="text-green-200 font-bold text-2xl animate-pulse">🎉 Bountiful Harvest! 🎉</p>
+                        <p className="text-green-300 text-sm mt-1">
+                           {isClaimedSuccessfully ? "Winnings claimed!" : "You Won! Publish proof to enable claim."}
+                        </p>
+                   </motion.div>
 
-                      {/* Action Buttons for Win State */} 
-                      <div className="flex flex-col sm:flex-row gap-3 mt-6 justify-center">
-                        <motion.button
-                          onClick={handleFinalizeRandomness}
-                          disabled={isFinalizingRandomness || isRandomnessFinalized || isLoading}
-                          className={`w-full sm:w-auto px-4 py-2 rounded-lg font-medium transition-colors flex items-center justify-center space-x-1 ${ 
-                             isRandomnessFinalized ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
-                             : isFinalizingRandomness ? 'bg-blue-700 text-white animate-pulse cursor-wait' 
-                             : 'bg-blue-600 hover:bg-blue-500 text-white' 
-                          }`}
-                          whileHover={!(isFinalizingRandomness || isRandomnessFinalized) ? { scale: 1.03 } : {}}
-                          whileTap={!(isFinalizingRandomness || isRandomnessFinalized) ? { scale: 0.97 } : {}}
-                        >
-                          {isFinalizingRandomness ? (
-                              <>
-                                <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                                <span>Publishing...</span>
-                              </>
-                            ) : isRandomnessFinalized ? (
-                                <span>Proof Published ✓</span>
-                            ) : (
-                                <span>Publish Proof</span>
-                          )}
-                        </motion.button>
+                      {/* Conditionally render buttons based on claim status */} 
+                      {!isClaimedSuccessfully ? (
+                         <div className="flex flex-col sm:flex-row gap-3 mt-6 justify-center">
+                           <motion.button
+                             onClick={handleFinalizeRandomness}
+                             disabled={isFinalizingRandomness || isRandomnessFinalized || isLoading}
+                             className={`w-full sm:w-auto px-4 py-2 rounded-lg font-medium transition-colors flex items-center justify-center space-x-1 ${ 
+                                isRandomnessFinalized ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
+                                : isFinalizingRandomness ? 'bg-blue-700 text-white animate-pulse cursor-wait' 
+                                : 'bg-blue-600 hover:bg-blue-500 text-white' 
+                             }`}
+                             whileHover={!(isFinalizingRandomness || isRandomnessFinalized) ? { scale: 1.03 } : {}}
+                             whileTap={!(isFinalizingRandomness || isRandomnessFinalized) ? { scale: 0.97 } : {}}
+                           >
+                             {isFinalizingRandomness ? (
+                                 <>
+                                   <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                   <span>Publishing...</span>
+                                 </>
+                               ) : isRandomnessFinalized ? (
+                                   <span>Proof Published ✓</span>
+                               ) : (
+                                   <span>Publish Proof</span>
+                             )}
+                           </motion.button>
 
-                        <motion.button
-                          onClick={() => { /* TODO: Implement Claim Logic */ alert("Claim logic not yet implemented."); }}
-                          disabled={isFinalizingRandomness || !isRandomnessFinalized || isLoading}
-                          className={`w-full sm:w-auto px-4 py-2 rounded-lg font-medium transition-colors flex items-center justify-center space-x-1 ${ 
-                             !isRandomnessFinalized ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
-                             : 'bg-green-600 hover:bg-green-500 text-white' 
-                          }`}
-                           whileHover={isRandomnessFinalized && !isFinalizingRandomness ? { scale: 1.03 } : {}}
-                           whileTap={isRandomnessFinalized && !isFinalizingRandomness ? { scale: 0.97 } : {}}
-                        >
-                          <span>Claim Your Winnings</span>
-                        </motion.button>
-                      </div>
+                           <motion.button
+                             onClick={handleClaimWinnings}
+                             disabled={isFinalizingRandomness || isClaiming || !isRandomnessFinalized || isLoading}
+                             className={`w-full sm:w-auto px-4 py-2 rounded-lg font-medium transition-colors flex items-center justify-center space-x-1 ${ 
+                                !isRandomnessFinalized ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
+                                : isClaiming ? 'bg-green-700 text-white animate-pulse cursor-wait' 
+                                : 'bg-green-600 hover:bg-green-500 text-white' 
+                             }`}
+                              whileHover={isRandomnessFinalized && !isFinalizingRandomness && !isClaiming ? { scale: 1.03 } : {}}
+                              whileTap={isRandomnessFinalized && !isFinalizingRandomness && !isClaiming ? { scale: 0.97 } : {}}
+                           >
+                             {isClaiming ? (
+                                 <>
+                                   <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                   <span>Claiming...</span>
+                                 </>
+                               ) : (
+                                 <span>Claim Your Winnings</span>
+                             )}
+                           </motion.button>
+                         </div>
+                      ) : (
+                         <div className="mt-6 flex justify-center">
+                            <button
+                                onClick={resetDev}
+                                className="w-full max-w-xs mx-auto py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-500 transition-colors text-sm"
+                            >
+                                Plant Another Seed (Play Again)
+                            </button>
+                         </div>
+                      )}
                    </>
                  )}
                   {hasWonResult === false && (
                      <> {/* Wrap Loss UI and Button */} 
-                       <motion.div
-                         initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                         className="bg-gradient-to-br from-red-800 to-orange-800 border border-red-600 rounded-lg p-6 mt-2 shadow-xl"
-                       >
-                         <p className="text-red-200 font-medium text-2xl">🥀 Withered Seed 🥀</p>
-                         <p className="text-red-300 text-sm mt-1">Better luck next time!</p>
-                       </motion.div>
+                   <motion.div
+                     initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                     className="bg-gradient-to-br from-red-800 to-orange-800 border border-red-600 rounded-lg p-6 mt-2 shadow-xl"
+                   >
+                     <p className="text-red-200 font-medium text-2xl">🥀 Withered Seed 🥀</p>
+                     <p className="text-red-300 text-sm mt-1">Better luck next time!</p>
+                   </motion.div>
                        {/* Keep Plant Another Seed button for loss */} 
-                       <button
-                           onClick={resetDev}
-                           className="w-full max-w-xs mx-auto py-2 mt-6 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-500 transition-colors text-sm"
-                       >
-                           Plant Another Seed
-                       </button>
+                    <button
+                        onClick={resetDev}
+                        className="w-full max-w-xs mx-auto py-2 mt-6 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-500 transition-colors text-sm"
+                    >
+                        Plant Another Seed
+                    </button>
                      </>
                  )}
                   {hasWonResult === null && (

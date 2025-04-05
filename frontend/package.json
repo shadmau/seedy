@@ -16,6 +16,7 @@
     "ethers": "^6.13.5",
     "framer-motion": "^12.6.3",
     "next": "15.2.4",
+    "pino-pretty": "^13.0.0",
     "react": "^19.0.0",
     "react-confetti": "^6.4.0",
     "react-dom": "^19.0.0",

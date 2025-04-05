@@ -1,0 +1,36 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@heroicons/react": "^2.2.0",
+    "@tanstack/react-query": "^5.71.10",
+    "@wagmi/connectors": "^5.7.12",
+    "ethers": "^6.13.5",
+    "framer-motion": "^12.6.3",
+    "next": "15.2.4",
+    "react": "^19.0.0",
+    "react-confetti": "^6.4.0",
+    "react-dom": "^19.0.0",
+    "react-use": "^17.6.0",
+    "viem": "^2.25.0",
+    "wagmi": "^2.14.16"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "15.2.4",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

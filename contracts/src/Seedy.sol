@@ -1,124 +1,173 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.17;
 
+// Import both the struct and the library functions from the file
+import {BigNumber, BigNumbers} from "./BigNumbers.sol";
+
+/**
+ * @title SeedyVerifier
+ * @notice Implementation for Pietrzak VDF verification.
+ * @dev Uses BigNumbers library functions for large number operations.
+ */
 contract SeedyVerifier {
+    // Address of the ModExp precompile (EIP-198)
     address constant MODEXP_PRECOMPILE = address(0x05);
 
-    error ProofLengthMismatch();
-    error InvalidDelta();
+    // --- Errors ---
+    error ProofLengthMismatch(uint256 expected, uint256 actual);
+    error InvalidDelta(uint256 delta, uint256 tau);
     error T_MustBePowerOfTwo();
     error PrecompileCallFailed();
-    error InvalidProofIndex();
-    error InvalidInputLengths();
+    error ModulusIsZero();
+    error InputNegative();
 
-    function verifyPietrzakVDF(
-        bytes memory x_initial,
-        bytes memory y_final,
+    // --- VDF Verification Logic ---
+
+    function verify(
+        bytes calldata x,
+        bytes calldata y,
         uint256 T,
         uint256 delta,
-        bytes[] memory proof,
-        bytes memory N
-    ) external view returns (bool isValid) {
+        bytes[] calldata proof,
+        bytes calldata N
+    ) external view returns (bytes memory out1, bytes memory out2) {
+        // --- Input Validation ---
         if (T == 0 || (T & (T - 1)) != 0) revert T_MustBePowerOfTwo();
         uint256 tau = _log2(T);
-
+        if (delta >= tau) revert InvalidDelta(delta, tau);
         uint256 expectedProofLength = tau - delta;
-        if (proof.length != expectedProofLength) revert ProofLengthMismatch();
-        if (delta >= tau) revert InvalidDelta();
-
-        bytes memory xi = x_initial;
-        bytes memory yi = y_final;
-
-        for (uint256 i = 1; i <= expectedProofLength; i++) {
-            if ((i - 1) >= proof.length) revert InvalidProofIndex();
-            bytes memory vi = proof[i - 1];
-
-            bytes memory dataToHash = abi.encodePacked(xi, yi, vi);
-            uint256 ri_uint = uint256(keccak256(dataToHash));
-            bytes memory ri_bytes = _uint256ToBytes(ri_uint); // dummy for now
-
-            bytes memory xi_pow_ri = _callModExpPrecompile(xi, ri_bytes, N);
-
-            bytes memory xi_next = _modMul(xi_pow_ri, vi, N); // dummy for now
-
-            bytes memory vi_pow_ri = _callModExpPrecompile(vi, ri_bytes, N);
-            bytes memory yi_next = _modMul(vi_pow_ri, yi, N); // dummy for now
-
-            xi = xi_next;
-            yi = yi_next;
-            return true;
+        if (proof.length != expectedProofLength) {
+            revert ProofLengthMismatch(expectedProofLength, proof.length);
         }
 
-        uint256 num_final_squarings = 1 << delta; // 2^delta
+        // --- VDF Verification Loop ---
+        bytes memory xi = x;
+        bytes memory yi = y;
 
-        bytes memory expected_y = xi; // Start with final x state
-        for (uint256 k = 0; k < num_final_squarings; k++) {
-            expected_y = _squareMod(expected_y, N); // dummy for now
+        for (uint256 i = 0; i < expectedProofLength; i++) {
+            (xi, yi) = _vdfStep(xi, yi, proof[i], N);
         }
 
-        isValid = _equals(yi, expected_y);
+        // Final Check Step ---
+        //  expected_y = xi ^ (2^(2^delta)) mod N
+        bytes memory current_x = xi;
+        uint256 num_squarings = 1 << delta;
+        bytes memory expected_y = current_x;
 
-        return isValid;
+        for (uint256 i = 0; i < num_squarings; i++) {
+            expected_y = _modExp(expected_y, hex"02", N);
+        }
+
+        return (expected_y, yi);
     }
 
-    function _callModExpPrecompile(bytes memory base, bytes memory exponent, bytes memory modulus)
-        internal
-        view
-        returns (bytes memory result)
-    {
+    function _vdfStep(
+        bytes memory xi,
+        bytes memory yi,
+        bytes calldata vi,
+        bytes calldata N
+    ) internal view returns (bytes memory new_xi_bytes, bytes memory new_yi_bytes) {
+        bytes32 ri_hash = keccak256(abi.encodePacked(xi, yi, vi));
+        bytes memory ri_bytes = abi.encodePacked(uint256(ri_hash));
+        
+        bytes memory xi_pow_ri_bytes = _modExp(xi, ri_bytes, N);
+        bytes memory vi_pow_ri_bytes = _modExp(vi, ri_bytes, N);
+
+        bytes memory ONE_BYTES = hex"01";
+        new_xi_bytes = _calculate_new_xi(xi_pow_ri_bytes, vi, N);
+        new_yi_bytes = _calculate_new_yi(vi_pow_ri_bytes, yi, N);
+    }
+    
+    /**
+     * @dev Calculates new_xi = (xi^ri * vi) mod N
+     */
+    function _calculate_new_xi(
+        bytes memory xi_pow_ri_bytes,
+        bytes calldata vi,
+        bytes calldata N
+    ) internal view returns (bytes memory new_xi_bytes) {
+        bytes memory ONE_BYTES = hex"01";
+
+        BigNumber memory bn_xi_pow_ri = BigNumbers.init(xi_pow_ri_bytes, false);
+        BigNumber memory bn_vi = BigNumbers.init(vi, false);
+
+        BigNumber memory bnR_xi = BigNumbers.mul(bn_xi_pow_ri, bn_vi);
+        new_xi_bytes = _modExp(bnR_xi.val, ONE_BYTES, N);
+    }
+
+    /**
+     * @dev Calculates new_yi = (vi^ri * yi) mod N
+     */
+    function _calculate_new_yi(
+        bytes memory vi_pow_ri_bytes,
+        bytes memory yi,
+        bytes calldata N
+    ) internal view returns (bytes memory new_yi_bytes) {
+        bytes memory ONE_BYTES = hex"01";
+
+        BigNumber memory bn_vi_pow_ri = BigNumbers.init(vi_pow_ri_bytes, false);
+        BigNumber memory bn_yi = BigNumbers.init(yi, false);
+
+        BigNumber memory bnR_yi = BigNumbers.mul(bn_vi_pow_ri, bn_yi);
+        new_yi_bytes = _modExp(bnR_yi.val, ONE_BYTES, N);
+    }
+
+    /**
+     * @dev Performs modular exponentiation using the EIP-198 precompile.
+     */
+    function _modExp(
+        bytes memory base,
+        bytes memory exponent,
+        bytes memory modulus
+    ) internal view returns (bytes memory result) {
         uint256 baseLen = base.length;
         uint256 expLen = exponent.length;
         uint256 modLen = modulus.length;
+        if (modLen == 0) return bytes('');
 
         bytes memory input = new bytes(96 + baseLen + expLen + modLen);
-
         assembly {
             mstore(add(input, 0x20), baseLen)
             mstore(add(input, 0x40), expLen)
             mstore(add(input, 0x60), modLen)
-            function copyBytes(srcPtr, destPtr, len) {
-                for { let i := 0 } lt(i, len) { i := add(i, 32) } { mstore(add(destPtr, i), mload(add(srcPtr, i))) }
+
+            let inputDataPtr := add(input, 0x80)
+
+            let basePtr := add(base, 0x20)
+            let i := 0
+            for { } lt(i, baseLen) { i := add(i, 32) } {
+                mstore(add(inputDataPtr, i), mload(add(basePtr, i)))
             }
 
-            copyBytes(add(base, 0x20), add(input, 0x80), baseLen)
-            copyBytes(add(exponent, 0x20), add(add(input, 0x80), baseLen), expLen)
-            copyBytes(add(modulus, 0x20), add(add(add(input, 0x80), baseLen), expLen), modLen)
+            let expDataPtr := add(inputDataPtr, baseLen)
+            let expPtr := add(exponent, 0x20)
+            i := 0
+            for { } lt(i, expLen) { i := add(i, 32) } {
+                 mstore(add(expDataPtr, i), mload(add(expPtr, i)))
+             }
+
+            let modDataPtr := add(expDataPtr, expLen)
+            let modPtr := add(modulus, 0x20)
+            i := 0
+            for { } lt(i, modLen) { i := add(i, 32) } {
+                mstore(add(modDataPtr, i), mload(add(modPtr, i)))
+            }
         }
-
+        
         (bool success, bytes memory output) = MODEXP_PRECOMPILE.staticcall(input);
-
         if (!success) {
             revert PrecompileCallFailed();
         }
-
         result = output;
     }
 
+    /**
+     * @dev Calculates floor(log2(n)) for n > 0.
+     */
     function _log2(uint256 n) internal pure returns (uint256) {
-        uint256 msbPos = 0;
-        while ((n >> 1) > 0) {
-            n >>= 1;
-            msbPos++;
-        }
-        return msbPos;
-    }
-
-    function _modMul(bytes memory a, bytes memory b, bytes memory n) internal pure returns (bytes memory result) {
-        return abi.encodePacked(a, b, n); // Invalid logic, just to compile
-    }
-
-    function _squareMod(bytes memory a, bytes memory n) internal pure returns (bytes memory result) {
-        return _modMul(a, a, n); // Reuse modMul placeholder
-    }
-
-    function _equals(bytes memory a, bytes memory b) internal pure returns (bool) {
-        return keccak256(a) == keccak256(b);
-    }
-
-    function _uint256ToBytes(uint256 _number) internal pure returns (bytes memory b) {
-        b = new bytes(32);
-        assembly {
-            mstore(add(b, 32), _number)
-        }
+        require(n > 0, "_log2: Input must be positive");
+        uint256 len = BigNumbers.bitLength(n);
+        if (len == 0) return 0;
+        return len - 1;
     }
 }

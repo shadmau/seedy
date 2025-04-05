@@ -1,8 +1,28 @@
-import pkg from 'js-sha3';
-const { keccak256 } = pkg;
+import { ethers } from 'ethers'; 
 
-export function hashBigInts(...args: bigint[]): bigint {
-  const hex = args.map(n => n.toString(16).padStart(512, "0")).join("");
-  const hash = keccak256(Buffer.from(hex, "hex"));
-  return BigInt("0x" + hash);
+
+function bigintToMinimalHex(n: bigint): string {
+    if (n < 0) {
+        throw new Error("Negative numbers not handled for packing bytes.");
+    }
+    if (n === BigInt(0)) {
+        return '0x00';
+    }
+    let hex = n.toString(16);
+    if (hex.length % 2 !== 0) {
+        hex = '0' + hex;
+    }
+    return '0x' + hex;
+}
+
+
+export function hashBigIntsEthersStyle(...args: bigint[]): bigint {
+
+    const types = args.map(() => 'bytes');
+
+    const values = args.map(n => bigintToMinimalHex(n));
+
+    const hashHex = ethers.solidityPackedKeccak256(types, values);
+
+    return BigInt(hashHex);
 }

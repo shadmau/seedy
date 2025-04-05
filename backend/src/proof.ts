@@ -1,5 +1,5 @@
 import {  modPow } from 'bigint-crypto-utils';
-import { hashBigInts } from './utils/bigint.js';
+import { hashBigIntsEthersStyle } from './utils/bigint.js';
 import { evaluateVDF } from './evaluate.js';
 
 export async function generateProof(x: bigint, T: number, delta: number, N: bigint) {
@@ -14,7 +14,7 @@ export async function generateProof(x: bigint, T: number, delta: number, N: bigi
     for (let j = 0; j < T / 2 ** i; j++) {
       vi = (vi * vi) % N;
     }
-    const ri = hashBigInts(xi, yi, vi);
+    const ri = hashBigIntsEthersStyle(xi, yi, vi);
     const xiPlus1 = (modPow(xi, ri, N) * vi) % N;
     const yiPlus1 = (modPow(vi, ri, N) * yi) % N;
 

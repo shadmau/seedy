@@ -1,0 +1,103 @@
+[
+    {
+      "type": "function",
+      "name": "verify",
+      "inputs": [
+        {
+          "name": "x",
+          "type": "bytes",
+          "internalType": "bytes"
+        },
+        {
+          "name": "y",
+          "type": "bytes",
+          "internalType": "bytes"
+        },
+        {
+          "name": "T",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "delta",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "proof",
+          "type": "bytes[]",
+          "internalType": "bytes[]"
+        },
+        {
+          "name": "N",
+          "type": "bytes",
+          "internalType": "bytes"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "out1",
+          "type": "bytes",
+          "internalType": "bytes"
+        },
+        {
+          "name": "out2",
+          "type": "bytes",
+          "internalType": "bytes"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "error",
+      "name": "InputNegative",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "InvalidDelta",
+      "inputs": [
+        {
+          "name": "delta",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "tau",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "ModulusIsZero",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "PrecompileCallFailed",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "ProofLengthMismatch",
+      "inputs": [
+        {
+          "name": "expected",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "actual",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "T_MustBePowerOfTwo",
+      "inputs": []
+    }
+  ]

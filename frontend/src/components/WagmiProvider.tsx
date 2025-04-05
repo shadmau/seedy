@@ -11,7 +11,7 @@ const config = createConfig({
     metaMask()
   ],
   transports: {
-    [baseSepolia.id]: http(),
+    [baseSepolia.id]: http("https://base-sepolia.g.alchemy.com/v2/1M1BRjOvJuHPZsKKY0_wwBCadNswgNti"),
   },
 });
 

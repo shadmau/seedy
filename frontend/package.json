@@ -12,6 +12,7 @@
     "@heroicons/react": "^2.2.0",
     "@tanstack/react-query": "^5.71.10",
     "@wagmi/connectors": "^5.7.12",
+    "bigint-crypto-utils": "^3.3.0",
     "ethers": "^6.13.5",
     "framer-motion": "^12.6.3",
     "next": "15.2.4",

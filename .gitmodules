@@ -1,0 +1,3 @@
+[submodule "contracts/lib/solidity-BigNumber"]
+	path = contracts/lib/solidity-BigNumber
+	url = https://github.com/firoorg/solidity-BigNumber

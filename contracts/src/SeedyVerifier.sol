@@ -2,7 +2,6 @@
 pragma solidity ^0.8.17;
 
 import {BigNumber, BigNumbers} from "./BigNumbers.sol";
-// import "forge-std/console.sol";
 
 
 contract SeedyVerifier {

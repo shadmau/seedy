@@ -1,6 +1,5 @@
 # Project Title
 
-A brief description of the project.
 
 ## Structure
 
@@ -12,27 +11,21 @@ This project is organized into the following main components:
 
 ## Getting Started
 
-(Add instructions on how to set up and run the project)
 
 ### Prerequisites
 
-(List any software or tools required before installation)
 
 ### Installation
 
-(Provide step-by-step installation instructions)
 
 ## Usage
 
-(Explain how to use the application or library)
 
 ## Contributing
 
-(Explain how others can contribute to the project)
 
 ## License
 
-(Specify the license for the project)
 
 **Base Sepolia Addresses:**
 - `SeedyVerifier`: [`0xd4ee61b3CB112747B534876E4c5F7e60b36E2893`](https://base-sepolia.blockscout.com/address/0xd4ee61b3CB112747B534876E4c5F7e60b36E2893)

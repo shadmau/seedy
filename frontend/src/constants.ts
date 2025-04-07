@@ -1,0 +1,1 @@
+export const PADDED_1024_BIT_HEX_LENGTH = 258;

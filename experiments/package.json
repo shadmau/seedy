@@ -12,6 +12,7 @@
   "description": "",
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "@types/ws": "^8.18.1",
     "nodemon": "^3.1.9",
     "ts-node": "^10.9.2",
     "typescript": "^5.8.2"
@@ -20,6 +21,7 @@
     "bigint-crypto-utils": "^3.3.0",
     "crypto": "^1.0.1",
     "ethers": "^6.13.5",
-    "js-sha3": "^0.9.3"
+    "js-sha3": "^0.9.3",
+    "viem": "^2.26.0"
   }
 }

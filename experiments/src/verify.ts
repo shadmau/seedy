@@ -1,3 +1,4 @@
+import { PADDED_1024_BIT_HEX_LENGTH } from "./constants.js";
 import { hashBigIntsEthersStyle } from "./utils/bigint.js";
 import { modPow } from 'bigint-crypto-utils';
 
@@ -7,7 +8,11 @@ export async function verifyProof(x: bigint, y: bigint, T: number, delta: number
   let xi = x, yi = y;
   for (let i = 1; i <= tau - delta; i++) {
     const vi = proof[i - 1];
-    const ri = hashBigIntsEthersStyle(xi, yi, vi);
+    let pad = false
+    if ((xi.toString(16).length != PADDED_1024_BIT_HEX_LENGTH || yi.toString(16).length != PADDED_1024_BIT_HEX_LENGTH) && i != 1) {
+      pad = true;
+    }
+    const ri = hashBigIntsEthersStyle(pad, xi, yi, vi);
 
     console.log("--- VDF Step ---");
     console.log("  xi (input):");

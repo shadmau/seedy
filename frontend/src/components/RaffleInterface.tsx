@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useChainId, usePublicClient, useBalance } from 'wagmi';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useChainId, usePublicClient, useBalance, useSwitchChain } from 'wagmi';
 import { RAFFLE_CONTRACT_ADDRESS, RAFFLE_ABI } from '../contracts/raffleContract';
 import { SEEDY_COORDINATOR_ADDRESS, SEEDY_COORDINATOR_ABI } from '../contracts/coordinatorContract';
 import { SEEDY_VERIFIER_ADDRESS, SEEDY_VERIFIER_ABI } from '../contracts/verifierContract';
@@ -12,22 +12,20 @@ import { ArrowRightIcon, CheckCircleIcon, ClockIcon, ExclamationTriangleIcon, XC
 import Confetti from 'react-confetti';
 import { generateProof, bytesInputToBigInt } from '../utils/vdf';
 
-// --- Configuration ---
 const PREDEFINED_AMOUNTS = [0.0001, 0.05, 0.1, 0.5];
-const HOUSE_EDGE = 0.975; // 2.5% house edge
-const REFETCH_INTERVAL = 5000; // 5 seconds for status refetching
-const BLOCK_POLL_INTERVAL_MS = 1000; // Check block number every 1 second
+const HOUSE_EDGE = 0.975; 
+const REFETCH_INTERVAL = 5000;
+const BLOCK_POLL_INTERVAL_MS = 1000;
+const SHOW_DEBUG_PANEL_BUTTON = false;
 
-// --- Enums ---
 enum RaffleStatus {
   PENDING = 0,
   READY_TO_SOLVE = 1,
   SOLVED = 2,
   EXPIRED = 3,
-  UNKNOWN = 4 // Added for initial/error state
+  UNKNOWN = 4
 }
 
-// Type for the event arguments (adjust based on your actual event structure)
 type BetPlacedEventArgs = {
     player?: `0x${string}`;
     requestId?: bigint;
@@ -35,16 +33,13 @@ type BetPlacedEventArgs = {
     probabilityPermil?: bigint;
 };
 
-// Define a type for logs used in receipt processing - Replaced interface with type alias
 type ReceiptLog = Pick<Log, 'address' | 'topics' | 'data'>;
 
-// --- Helper Functions ---
 
-// Function to convert bigint to even-length hex string (0x-prefixed)
 function toEvenLengthHex(n: bigint): `0x${string}` {
   let hex = n.toString(16);
   if (hex.length % 2 !== 0) {
-    hex = '0' + hex; // Prepend 0 if odd length
+    hex = '0' + hex;
   }
   return `0x${hex}`;
 }
@@ -69,7 +64,6 @@ function isValidRaffleId(id: string | null): boolean {
   return !!id && !isNaN(Number(id)) && !id.startsWith('DEV-');
 }
 
-// Custom hook for window size (handles SSR)
 function useWindowSize() {
   const [size, setSize] = useState({ width: 0, height: 0 });
   useEffect(() => {
@@ -83,25 +77,81 @@ function useWindowSize() {
   return size;
 }
 
-// --- Component ---
 export function RaffleInterface() {
-  // --- Hooks ---
   const { address, isConnected } = useAccount();
   console.log("Debug: isConnected status:", isConnected);
   const chainId = useChainId();
-  const publicClient = usePublicClient(); // For getting block number
-  const [isClientMounted, setIsClientMounted] = useState(false); // Hydration fix state
+  const publicClient = usePublicClient();
+  const { switchChain } = useSwitchChain();
+  const [isClientMounted, setIsClientMounted] = useState(false);
+  const [isSwitchingNetwork, setIsSwitchingNetwork] = useState(false);
   
-  // Fetch the contract's balance
+  // Add network change logging
+  useEffect(() => {
+    console.log("Network changed - Current chainId:", chainId);
+    console.log("Is connected:", isConnected);
+    console.log("Is correct network:", chainId === baseSepolia.id);
+    
+    // Log the network name if possible
+    if (chainId) {
+      const networkName = chainId === baseSepolia.id ? "Base Sepolia" : 
+                         chainId === 1 ? "Ethereum Mainnet" :
+                         chainId === 11155111 ? "Sepolia" :
+                         chainId === 8453 ? "Base Mainnet" :
+                         `Unknown Network (${chainId})`;
+      console.log("Current network:", networkName);
+    }
+  }, [chainId, isConnected]);
+
+  // Add event listener for network changes
+  useEffect(() => {
+    const handleNetworkChange = (params: unknown) => {
+      const newChainId = typeof params === 'string' ? parseInt(params, 16) : null;
+      console.log("[RaffleInterface] Network change detected:", newChainId);
+      console.log("[RaffleInterface] Current chainId from hook:", chainId);
+      console.log("[RaffleInterface] Is correct network:", newChainId === baseSepolia.id);
+      
+      // Reset state on network change
+      if (newChainId !== baseSepolia.id) {
+        resetDev();
+      }
+    };
+
+    if (typeof window !== 'undefined' && window.ethereum) {
+      window.ethereum.on('chainChanged', handleNetworkChange);
+      
+      // Initial check
+      window.ethereum.request({ method: 'eth_chainId' })
+        .then((value: unknown) => {
+          const ethChainId = typeof value === 'string' ? parseInt(value, 16) : null;
+          console.log("[RaffleInterface] Initial ethereum chainId:", value);
+          console.log("[RaffleInterface] Initial chainId (decimal):", ethChainId);
+          console.log("[RaffleInterface] Matches Base Sepolia:", ethChainId === baseSepolia.id);
+          
+          // Reset state if not on Base Sepolia
+          if (ethChainId !== baseSepolia.id) {
+            resetDev();
+          }
+        })
+        .catch((error: Error) => {
+          console.error("[RaffleInterface] Error getting initial chainId:", error);
+        });
+    }
+
+    return () => {
+      if (typeof window !== 'undefined' && window.ethereum) {
+        window.ethereum.removeListener('chainChanged', handleNetworkChange);
+      }
+    };
+  }, [chainId]);
+  
   const { data: poolBalanceData, refetch: refetchPoolBalance } = useBalance({
     address: RAFFLE_CONTRACT_ADDRESS,
-    chainId: baseSepolia.id, // Ensure we're checking balance on the correct chain
+    chainId: baseSepolia.id,
   });
   
-  // --- Custom window size hook without external dependency ---
   const windowSize = useWindowSize();
   
-  // --- State ---
   const [selectedAmount, setSelectedAmount] = useState<number>(0.0001);
   const [isCustomAmount, setIsCustomAmount] = useState(false);
   const [customAmount, setCustomAmount] = useState<string>('');
@@ -119,9 +169,8 @@ export function RaffleInterface() {
   const [currentBlock, setCurrentBlock] = useState<bigint | null>(null);
   const [requestBlockInfo, setRequestBlockInfo] = useState<{ requestBlock: bigint; blockDelay: bigint } | null>(null);
   const [hasWonResult, setHasWonResult] = useState<boolean | null>(null);
-  const [isFinalizingRandomness, setIsFinalizingRandomness] = useState<boolean>(false); // For "Publish Proof" loading
-  const [isRandomnessFinalized, setIsRandomnessFinalized] = useState<boolean>(false); // Tracks if finalizeRandomness succeeded
-  // State to store parameters needed for finalization
+  const [isFinalizingRandomness, setIsFinalizingRandomness] = useState<boolean>(false);
+  const [isRandomnessFinalized, setIsRandomnessFinalized] = useState<boolean>(false);
   const [finalizationParams, setFinalizationParams] = useState<{
     yHex: `0x${string}`;
     proofHex: `0x${string}`[];
@@ -129,19 +178,21 @@ export function RaffleInterface() {
   } | null>(null);
   const [isClaiming, setIsClaiming] = useState<boolean>(false);
   const [isClaimedSuccessfully, setIsClaimedSuccessfully] = useState<boolean>(false);
+  // Debug state
+  const [debugRaffleId, setDebugRaffleId] = useState<string>('');
+  const [debugSeed, setDebugSeed] = useState<string>('');
+  const [showDebugPanel, setShowDebugPanel] = useState<boolean>(false);
 
-  // --- Wagmi Hooks ---
   const { writeContract, data: writeData, error: writeError, reset: resetWriteContract } = useWriteContract();
 
   const { 
-    data: receiptData, // Destructure the receipt into `receiptData`
+    data: receiptData, 
     isLoading: isConfirming, 
     isSuccess: isConfirmed 
   } = useWaitForTransactionReceipt({
     hash: currentTxHash,
   });
 
-  // --- Derived State ---
   const isDevModeRaffle = useMemo(() => displayRaffleId?.startsWith('DEV-') ?? false, [displayRaffleId]);
   const isRealRaffleId = isValidRaffleId(displayRaffleId);
   const isCorrectNetwork = chainId === baseSepolia.id;
@@ -151,18 +202,13 @@ export function RaffleInterface() {
     catch { return BigInt(0); }
   }, [betAmount]);
   
-  // Calculate oddsPermil based on WIN probability
   const oddsPermil = useMemo(() => {
-    // Use probability (win chance %) directly and convert to permil
     const winPermil = Math.round(probability * 10);
-    // Clamp between 1 (0.1% win chance) and 999 (99.9% win chance)
-    // Ensure the contract interprets this value as win probability permil.
     return BigInt(Math.max(1, Math.min(999, winPermil)));
   }, [probability]);
 
   const calculatedWinAmount = useMemo(() => betAmount * (1 / (probability / 100)) * HOUSE_EDGE, [betAmount, probability]);
 
-  // Read raffle status
   const { data: statusData, refetch: refetchStatus } = useReadContract({
     address: RAFFLE_CONTRACT_ADDRESS,
     abi: RAFFLE_ABI,
@@ -171,7 +217,6 @@ export function RaffleInterface() {
     query: { enabled: isRealRaffleId }
   });
 
-  // Fetch Raffle Details (for solved state)
   const { data: detailsData, refetch: refetchDetails } = useReadContract({
     address: RAFFLE_CONTRACT_ADDRESS,
     abi: RAFFLE_ABI,
@@ -180,7 +225,6 @@ export function RaffleInterface() {
     query: { enabled: isRealRaffleId && !isDevModeRaffle && (statusData as RaffleStatus) === RaffleStatus.SOLVED }
   });
 
-  // Extract `won` status safely from detailsData
   const isWon = useMemo(() => {
     if (isDevModeRaffle) return displayRaffleId === 'DEV-WIN';
     if (detailsData && Array.isArray(detailsData) && detailsData.length > 5) {
@@ -189,9 +233,6 @@ export function RaffleInterface() {
     return null;
   }, [isDevModeRaffle, displayRaffleId, detailsData]);
 
-  // --- Effects ---
-  
-  // Update window size
   useEffect(() => {
     if (typeof window === 'undefined') return;
     
@@ -201,31 +242,45 @@ export function RaffleInterface() {
     }
     
     window.addEventListener('resize', handleResize);
-    handleResize(); // Initial size
+    handleResize();
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Hydration fix: Set mount status on client
   useEffect(() => {
     setIsClientMounted(true);
   }, []);
 
-  // Check network status on mount/network change
   useEffect(() => {
-      if (isConnected && !isCorrectNetwork) {
-         setNetworkError("Incorrect Network: Please switch to Base Sepolia.");
-      } else {
-          setNetworkError(null);
-      }
-  }, [isConnected, isCorrectNetwork]);
+    if (isConnected && !isCorrectNetwork && !isSwitchingNetwork) {
+      console.log("[RaffleInterface] Detected incorrect network. Current:", chainId, "Expected:", baseSepolia.id);
+      setIsSwitchingNetwork(true);
+      setNetworkError("Please switch to Base Sepolia network to continue.");
+      
+      const attemptSwitch = async () => {
+        try {
+          console.log("[RaffleInterface] Attempting to switch to Base Sepolia...");
+          await switchChain({ chainId: baseSepolia.id });
+          console.log("[RaffleInterface] Network switch request sent successfully");
+        } catch (error: unknown) {
+          console.error("[RaffleInterface] Failed to switch network:", error);
+          setNetworkError("Failed to switch to Base Sepolia. Please switch manually in your wallet.");
+        } finally {
+          setIsSwitchingNetwork(false);
+        }
+      };
+      
+      attemptSwitch();
+    } else if (isConnected && isCorrectNetwork) {
+      console.log("[RaffleInterface] Connected to correct network (Base Sepolia)");
+      setNetworkError(null);
+    }
+  }, [isConnected, isCorrectNetwork, switchChain, isSwitchingNetwork, chainId]);
 
-  // Reset state on account or network change
   useEffect(() => {
     console.log("Account or Chain ID changed, resetting state.");
-    resetDev(); // Use resetDev to clear everything
-  }, [address, chainId]); // resetDev includes resetWriteContract
+    resetDev();
+  }, [address, chainId]);
 
-  // Update writeData hash
   useEffect(() => {
     if (writeData) {
       console.log("New transaction hash received:", writeData);
@@ -233,7 +288,6 @@ export function RaffleInterface() {
     }
   }, [writeData]);
 
-  // Handle transaction confirmation and errors
   useEffect(() => {
     if (isConfirming) {
       console.log("Transaction confirmation in progress...");
@@ -245,12 +299,10 @@ export function RaffleInterface() {
 
       if (isEntering) {
         console.log("PlaceBet TX Confirmed. Simulating raffle ID retrieval...");
-        // --- Replace with actual event log decoding --- 
-        const mockRaffleId = currentTxHash.slice(-6); // Use part of hash for mock ID
+        const mockRaffleId = currentTxHash.slice(-6);
         setDisplayRaffleId(mockRaffleId);
-        setRaffleStatus(RaffleStatus.PENDING); // Explicitly set PENDING status
+        setRaffleStatus(RaffleStatus.PENDING);
         
-        // Set mock block information for the UI
         const mockCurrentBlock = BigInt(Math.floor(Date.now() / 1000) % 1000000);
         const mockBlockDelay = BigInt(5);
         const mockTargetBlock = mockCurrentBlock + mockBlockDelay;
@@ -264,14 +316,13 @@ export function RaffleInterface() {
         
         console.log("Mock Raffle ID set:", mockRaffleId);
         refetchStatus();
-        // --- End Simulation ---
       } else if (isSolving) {
         console.log("Solve Puzzle/hasWon check completed (no transaction).");
-        // setIsSolving(false); // Already set after hasWon call
-      } else if (isFinalizingRandomness) { // Check if we were finalizing
+        setIsSolving(false);
+      } else if (isFinalizingRandomness) {
          console.log("FinalizeRandomness TX Confirmed.");
-         setIsRandomnessFinalized(true); // Set flag for UI
-         setIsFinalizingRandomness(false); // Reset loading state
+         setIsRandomnessFinalized(true);
+         setIsFinalizingRandomness(false);
          setCurrentTxHash(undefined);
          resetWriteContract();
       } else if (isClaiming) { // Confirmed finalizeBet (Claim)
@@ -290,7 +341,6 @@ export function RaffleInterface() {
 
   }, [isConfirmed, isConfirming, currentTxHash, isEntering, isSolving, raffleId, receiptData, resetWriteContract, writeContract, refetchStatus, refetchDetails, isFinalizingRandomness, isClaiming, setIsClaimedSuccessfully]);
 
-  // Handle direct write errors (e.g., user rejection)
   useEffect(() => {
     if (writeError) {
       console.error("Write error:", writeError);
@@ -299,7 +349,7 @@ export function RaffleInterface() {
       if (isSolving) setIsSolving(false);
       if (isFinalizingRandomness) {
          console.error("FinalizeRandomness write error:", writeError);
-         setIsFinalizingRandomness(false); // Reset finalizing state on error
+         setIsFinalizingRandomness(false);
       }
       if (isClaiming) {
          console.error("FinalizeBet (Claim) write error:", writeError);
@@ -310,7 +360,6 @@ export function RaffleInterface() {
     }
   }, [writeError, isEntering, isSolving, isFinalizingRandomness, isClaiming, resetWriteContract]);
 
-  // Update raffle status from contract data
   useEffect(() => {
     if (isRealRaffleId && statusData !== undefined && statusData !== null) {
       const newStatus = statusData as RaffleStatus;
@@ -323,7 +372,6 @@ export function RaffleInterface() {
     }
   }, [statusData, isRealRaffleId, refetchDetails]);
 
-  // Trigger confetti on win
   useEffect(() => {
     if (isWon === true && !showConfetti) {
         console.log("Win detected, showing confetti!");
@@ -336,7 +384,6 @@ export function RaffleInterface() {
       }
   }, [isWon, showConfetti]);
 
-  // Periodically refetch status if pending or ready (only for real IDs)
   useEffect(() => {
     let intervalId: NodeJS.Timeout | null = null;
     if (isRealRaffleId && (raffleStatus === RaffleStatus.PENDING || raffleStatus === RaffleStatus.READY_TO_SOLVE)) {
@@ -355,19 +402,17 @@ export function RaffleInterface() {
     };
   }, [isRealRaffleId, displayRaffleId, raffleStatus, refetchStatus, refetchDetails]);
 
-  // Periodically refetch pool balance
   useEffect(() => {
     const intervalId = setInterval(() => {
       if (isCorrectNetwork) {
         console.log("Refetching pool balance...");
         refetchPoolBalance();
       }
-    }, REFETCH_INTERVAL * 2); // Refetch less frequently than status
+    }, REFETCH_INTERVAL * 2);
 
     return () => clearInterval(intervalId);
   }, [isCorrectNetwork, refetchPoolBalance]);
 
-  // Set appropriate status in dev mode
   useEffect(() => {
     if (isDevModeRaffle && displayRaffleId) {
       console.log("Setting dev mode status for:", displayRaffleId);
@@ -391,14 +436,11 @@ export function RaffleInterface() {
     }
   }, [isDevModeRaffle, displayRaffleId]);
 
-  // Poll for current block number
   useEffect(() => {
     let intervalId: NodeJS.Timeout | null = null;
     
-    // Only poll when in PENDING state
     if (raffleStatus === RaffleStatus.PENDING) {
       async function initialFetchAndStartPolling() {
-         // Ensure initial state is set before polling starts
         if (!currentBlock && !isDevModeRaffle && publicClient) {
            try {
              const initialBlock = await publicClient.getBlockNumber();
@@ -406,24 +448,16 @@ export function RaffleInterface() {
              console.log("Fetched initial block number:", initialBlock.toString());
            } catch (error) {
               console.error("Failed to fetch initial block number:", error);
-              // Potentially set an error state or retry?
            }
          } else if (!currentBlock && isDevModeRaffle) {
-             // Dev mode pending should have set initial block via showDevPending
-             // If it's somehow null, maybe log a warning or set a default?
              console.warn("Dev mode PENDING started with null currentBlock. Check showDevPending.");
-             // Set a default mock if needed?
-             // setCurrentBlock(BigInt(100)); 
+             setCurrentBlock(BigInt(100)); 
          }
 
-        // Now start the interval
         intervalId = setInterval(async () => {
-          // Define timestamp at the start of the callback
           const timestamp = new Date().toISOString();
           
-          // Actual update logic inside interval
           if (isDevModeRaffle && raffleStatus === RaffleStatus.PENDING) {
-            // Dev mode: increment logic
             if (currentBlock) {
               const incrementedBlock = currentBlock + BigInt(1);
               setCurrentBlock(incrementedBlock);
@@ -435,25 +469,20 @@ export function RaffleInterface() {
               }
             }
           } else if (raffleStatus === RaffleStatus.PENDING && publicClient) {
-            // Normal mode: fetch logic
             try {
               const blockNumber = await publicClient.getBlockNumber();
-              // Log BEFORE setting state
               console.log(`[${timestamp}] Normal mode: Fetched block ${blockNumber}. Target: ${targetBlock?.toString() ?? 'N/A'}. Current in state: ${currentBlock?.toString() ?? 'null'}. Updating state.`);
-              setCurrentBlock(blockNumber); // Update state
+              setCurrentBlock(blockNumber);
 
-              // *** Check if target block is reached in normal mode ***
               if (targetBlock && blockNumber >= targetBlock) {
                 console.log(`[${timestamp}] Normal mode: Target block ${targetBlock} reached or passed by current block ${blockNumber}! Moving to READY_TO_SOLVE.`);
                 setRaffleStatus(RaffleStatus.READY_TO_SOLVE);
               }
-              // *** End check ***
 
             } catch (error) {
               console.error(`[${timestamp}] Failed to fetch block number:`, error);
             }
           } else {
-            // If status is no longer PENDING, or no publicClient, stop polling
              if (intervalId) {
                 const statusName = raffleStatus !== null ? RaffleStatus[raffleStatus] : 'null';
                 console.log(`[${timestamp}] Stopping polling because status (${statusName}) is not PENDING or publicClient missing.`);
@@ -474,10 +503,8 @@ export function RaffleInterface() {
         clearInterval(intervalId);
       }
     };
-    // Dependencies: Include raffleStatus to trigger start/stop polling
-  }, [publicClient, raffleStatus, isDevModeRaffle]); // Removed currentBlock, targetBlock as dependencies to avoid infinite loops
+  }, [publicClient, raffleStatus, isDevModeRaffle]);
 
-  // --- Effect to process transaction receipt --- 
   useEffect(() => {
     const timestamp = new Date().toISOString();
     if (receiptData && isEntering && currentTxHash && receiptData.transactionHash === currentTxHash) {
@@ -491,7 +518,6 @@ export function RaffleInterface() {
 
       if (betPlacedLog) {
         try {
-          // Directly use the decoded log, assuming structure matches ABI
           const decodedLog = decodeEventLog({ 
             abi: RAFFLE_ABI, 
             data: betPlacedLog.data, 
@@ -499,18 +525,14 @@ export function RaffleInterface() {
           }) as { eventName: string; args?: unknown };
           console.log("Decoded Log:", decodedLog);
 
-          // Check eventName and assert args type if eventName matches
           if (decodedLog.eventName === 'BetPlaced') {
-            // Assert the type of args for BetPlaced event
             const args = decodedLog.args as BetPlacedEventArgs;
             console.log(`[${timestamp}] Decoded BetPlaced event args from receipt:`, args);
 
-            // Now access requestId safely
             if (args && args.requestId !== undefined) { 
               const receivedRequestId = args.requestId;
               console.log(`[${timestamp}] Extracted Request ID from receipt log: ${receivedRequestId.toString()}`);
 
-              // --- Set state based on receipt and decoded log --- 
               const actualCurrentBlock = receipt.blockNumber;
               const blockDelay = BigInt(5); 
               const calculatedTargetBlock = actualCurrentBlock + blockDelay;
@@ -547,7 +569,6 @@ export function RaffleInterface() {
     }
   }, [receiptData, isEntering, currentTxHash, resetWriteContract, refetchStatus]);
 
-  // --- Dev Mode Handler ---
   const resetDev = () => {
     console.log("Resetting component state (Manual)");
     setDisplayRaffleId(null);
@@ -566,22 +587,20 @@ export function RaffleInterface() {
     setIsCustomAmount(false);
     setCustomAmount('');
     setProbability(50);
-    setIsFinalizingRandomness(false); // Also reset finalizing states
+    setIsFinalizingRandomness(false);
     setIsRandomnessFinalized(false);
-    setHasWonResult(null); // Reset win result
+    setHasWonResult(null);
     setFinalizationParams(null);
     setIsClaiming(false);
     setIsClaimedSuccessfully(false);
   }
 
-  // --- Dev Mode Showcase Functions (Keep displayRaffleId as string) ---
   const showDevWin = () => { resetDev(); setDisplayRaffleId("DEV-WIN"); };
   const showDevLoss = () => { resetDev(); setDisplayRaffleId("DEV-LOSS"); };
   const showDevPending = () => { 
     resetDev(); 
     setDisplayRaffleId("DEV-PENDING"); 
     
-    // Set mock block values for dev mode
     const mockCurrentBlock = BigInt(100);
     const mockBlockDelay = BigInt(5);
     const mockTargetBlock = mockCurrentBlock + mockBlockDelay;
@@ -596,7 +615,6 @@ export function RaffleInterface() {
   const showDevReady = () => { resetDev(); setDisplayRaffleId("DEV-READY"); };
   const showDevExpired = () => { resetDev(); setDisplayRaffleId("DEV-EXPIRED"); };
 
-  // --- UI Helpers ---
   const getSliderBackground = () => {
     const colorStop = Math.max(0, Math.min(100, probability));
     return `linear-gradient(to right, #84cc16 ${colorStop}%, #4b5563 ${colorStop}%)`;
@@ -605,10 +623,251 @@ export function RaffleInterface() {
   const isLoading = isEntering || isSolving || isConfirming;
   const buttonText = isEntering ? "Planting Seed..." : isSolving ? "Harvesting..." : isConfirming ? "Confirming Tx..." : "Plant Your Seed!";
 
-  // --- Handler for Finalizing Randomness (Uses Stored Params) ---
+  // Re-add network validation function (without automatic switching)
+  const validateNetwork = async () => {
+    if (typeof window === 'undefined' || !window.ethereum) {
+      setNetworkError("No ethereum provider found");
+      throw new Error("No ethereum provider found");
+    }
+
+    try {
+      const ethChainId = await window.ethereum.request({ method: 'eth_chainId' });
+      const currentChainId = parseInt(ethChainId as string, 16);
+      
+      console.log("[RaffleInterface] Validating network before transaction:");
+      console.log("  - Current ChainId:", currentChainId);
+      console.log("  - Expected ChainId:", baseSepolia.id);
+      
+      if (currentChainId !== baseSepolia.id) {
+        console.log("[RaffleInterface] validateNetwork: Wrong network detected.");
+        const errorMessage = "Wrong Network: Please switch to Base Sepolia to proceed.";
+        setNetworkError(errorMessage);
+        // Throw error to prevent transaction
+        throw new Error(errorMessage); 
+      } else {
+        // Clear error if network is correct during validation
+        setNetworkError(null); 
+      }
+    } catch (error) {
+      console.error("[RaffleInterface] Network validation error:", error);
+      // Ensure error state is set if validation fails
+      if (!networkError && error instanceof Error) {
+        setNetworkError(error.message);
+      }
+      throw error; // Re-throw error to stop the transaction process
+    }
+  };
+
+  // Re-add wrap writeContract with network validation
+  const safeWriteContract = async (params: Parameters<typeof writeContract>[0]) => {
+    await validateNetwork(); // Validate before calling
+    return writeContract(params);
+  };
+
+  // Update the placeBet call
+  const handlePlaceBet = async () => {
+    // Check network correctness FIRST
+    if (!isCorrectNetwork) {
+      console.log("[RaffleInterface] handlePlaceBet: Incorrect network detected.");
+      setNetworkError("Wrong Network: Please switch to Base Sepolia to place a bet.");
+      return; // Stop execution if network is wrong
+    }
+    
+    if (!isConnected) {
+      setNetworkError("Please connect your wallet.");
+      return;
+    }
+    if (selectedAmount <= 0) {
+      setNetworkError("Please enter a valid amount to bet.");
+      return;
+    }
+    if (probability < 0.1 || probability > 99.9) {
+      setNetworkError("Probability must be between 0.1% and 99.9%.");
+      return;
+    }
+    
+    // Ensure bet amount is valid before proceeding
+    if (betAmountParsed <= BigInt(0)) {
+      setNetworkError("Invalid bet amount.");
+      return;
+    }
+    
+    setNetworkError(null);
+    setIsEntering(true);
+    setIsSolving(false);
+    setCurrentTxHash(undefined);
+    console.log("--- placeBet call ---");
+    console.log("oddsPermil:", oddsPermil);
+    console.log("value (betAmountParsed):", betAmountParsed);
+    
+    try {
+      // Use safeWriteContract for validation
+      const txParams = {
+        address: RAFFLE_CONTRACT_ADDRESS,
+        abi: RAFFLE_ABI,
+        functionName: 'placeBet',
+        args: [oddsPermil],
+        // Conditionally add value - attempt again
+        ...(betAmountParsed > BigInt(0) && { value: betAmountParsed }), 
+      };
+            
+      await safeWriteContract(txParams as Parameters<typeof writeContract>[0]);
+      
+    } catch (error) {
+      console.error("[RaffleInterface] Transaction failed:", error);
+      setNetworkError(formatError(error));
+      setIsEntering(false);
+    }
+  };
+
+  // Update the solve puzzle call
+  const handleSolvePuzzle = async () => {
+    const timestamp = new Date().toISOString();
+    if (!isConnected || !raffleId || !publicClient) {
+      setNetworkError("Cannot proceed: Wallet not connected, missing Raffle ID, or connection error.");
+      console.error(`[${timestamp}] Pre-check failed for solve: connected=${isConnected}, raffleId=${raffleId}, publicClient=${!!publicClient}`);
+      return;
+    }
+
+    setNetworkError(null);
+    setIsSolving(true); 
+    setCurrentTxHash(undefined); 
+
+    try {
+      console.log(`[${timestamp}] 1. Fetching VDF parameters for Request ID: ${raffleId.toString()}`);
+      
+      // --- Fetch Request Data (T, delta) and Modulus (N) --- 
+      const [requestData, modulusData] = await Promise.all([
+        publicClient.readContract({
+           address: SEEDY_COORDINATOR_ADDRESS,
+           abi: SEEDY_COORDINATOR_ABI as Abi,
+           functionName: 'requests',
+           args: [raffleId]
+        }),
+        publicClient.readContract({
+           address: SEEDY_COORDINATOR_ADDRESS,
+           abi: SEEDY_COORDINATOR_ABI as Abi,
+           functionName: 'VDF_MODULUS'
+        })
+      ]);
+
+      if (!requestData || typeof requestData !== 'object' || requestData === null || !Array.isArray(requestData)) {
+         throw new Error("Invalid request data received from Coordinator contract.");
+      }
+      const T_param = requestData[3] as bigint; 
+      const delta_param = requestData[4] as bigint;
+      const N_param = bytesInputToBigInt(modulusData as `0x${string}`); 
+
+      console.log(`[${timestamp}] Fetched Params: T=${T_param}, delta=${delta_param}, N=${N_param}`); 
+      if (T_param === undefined || delta_param === undefined || N_param === undefined) {
+         throw new Error("One or more VDF parameters (T, delta, N) are undefined after fetching.");
+      }
+      // --- End Fetch --- 
+      
+      console.log(`[${timestamp}] 2. Computing seed for Request ID: ${raffleId.toString()}`);
+      let debugSeedResult: `0x${string}`;
+      
+      if (debugSeed) {
+        console.log(`[${timestamp}] Debug: Using provided seed: ${debugSeed}`);
+        // Ensure the seed has 0x prefix
+        debugSeedResult = debugSeed.startsWith('0x') ? debugSeed as `0x${string}` : `0x${debugSeed}` as `0x${string}`;
+      } else {
+        console.log(`[${timestamp}] Debug: Computing seed for Request ID: ${raffleId.toString()}`);
+        debugSeedResult = await publicClient.readContract({
+          address: SEEDY_COORDINATOR_ADDRESS,
+          abi: SEEDY_COORDINATOR_ABI as Abi,
+          functionName: 'computeSeed',
+          args: [raffleId] 
+        }) as `0x${string}`;
+        
+        console.log(`[${timestamp}] Debug: Computed Seed Result (x): ${debugSeedResult}`);
+      }
+      
+      console.log(`[${timestamp}] 3. Generating VDF Proof... (x=${debugSeedResult}, T=${T_param}, delta=${delta_param}, N=${N_param})`);
+      const { y: debugY, proof: debugProofBigInts } = await generateProof(debugSeedResult, T_param, delta_param, N_param);
+      console.log(`[${timestamp}] Debug: Proof Generated (bigints): y=${debugY}, proof=[${debugProofBigInts.map((p: bigint) => p.toString()).join(', ')}]`);
+      
+      const yHex = toEvenLengthHex(debugY);
+      const proofHex = debugProofBigInts.map(toEvenLengthHex);
+      console.log(`[${timestamp}] Proof Formatted (hex):`, proofHex);
+      // --- End Formatting ---
+
+      // --- Verify VDF Proof (Client-side check) ---
+      console.log(`[${timestamp}] 4. Verifying VDF Proof on-chain (read-only)...`);
+
+      // --- Log parameters BEFORE verification ---
+      console.log(`[${timestamp}] Parameters for verify function:`);
+      console.log(`  x (seedResult):`, debugSeedResult);
+      console.log(`  y:`, yHex);
+      console.log(`  T (T_param):`, T_param?.toString());
+      console.log(`  delta (delta_param):`, delta_param?.toString());
+      console.log(`  proof (proofHex):`, proofHex);
+      console.log(`  N (modulusData):`, modulusData);
+      // --- End Log ---
+
+      try {
+          const verificationResult = await publicClient.readContract({
+              address: SEEDY_VERIFIER_ADDRESS,
+              abi: SEEDY_VERIFIER_ABI as Abi,
+              functionName: 'verify',
+              args: [
+                  debugSeedResult,
+                  yHex,
+                  T_param,
+                  delta_param,
+                  proofHex,
+                  modulusData
+              ]
+          });
+          console.log(`[${timestamp}] Proof Verification Result:`, verificationResult);
+          let actualY = null;
+          // --- Extract actualY from verification result ---
+          if (Array.isArray(verificationResult) && verificationResult.length > 0) {
+              actualY = verificationResult[0];
+              console.log(`[${timestamp}] Extracted actualY for hasWon: ${actualY}`);
+          } else {
+              throw new Error("Could not extract actual Y value from verification result.");
+          }
+
+          // --- Call hasWon on Raffle Contract ---
+          console.log(`[${timestamp}] 5. Calling hasWon view function...`);
+          const wonResult = await publicClient.readContract({
+              address: RAFFLE_CONTRACT_ADDRESS,
+              abi: RAFFLE_ABI, // Ensure RAFFLE_ABI is correctly typed
+              functionName: 'hasWon',
+              args: [raffleId!, actualY] // Pass raffleId and extracted actualY
+          });
+          console.log(`[${timestamp}] hasWon Result:`, wonResult);
+          // --- End hasWon Call ---
+
+          // --- Store parameters for potential finalization ---
+          setFinalizationParams({ yHex, proofHex, seedResult: debugSeedResult });
+          // --- End Store ---
+
+          // --- Update State based on hasWon result ---
+          setRaffleStatus(RaffleStatus.SOLVED); // Set status to Solved
+          setHasWonResult(wonResult as boolean); // Set the win result state
+          setIsSolving(false); // Stop loading indicator *after* storing params
+          // --- End State Update ---
+
+      } catch (verifyOrHasWonError) { // Catch errors from verification OR hasWon call
+          console.error(`[${timestamp}] Error during VDF verification or hasWon call:`, verifyOrHasWonError);
+          setNetworkError(`Error checking win status: ${formatError(verifyOrHasWonError)}`);
+          setIsSolving(false); // Stop solving state if verification/check fails
+          return;
+      }
+      // --- End Proof Verification and hasWon check ---
+
+    } catch (outerError) { // Catch errors from initial parameter fetching etc.
+      console.error(`[${timestamp}] Error during VDF parameter fetch or seed computation:`, outerError);
+      setNetworkError(`Error preparing check: ${formatError(outerError)}`);
+      setIsSolving(false); // Reset solving state on outer error
+    }
+  };
+
+  // Update the finalize randomness call
   const handleFinalizeRandomness = async () => {
     const timestamp = new Date().toISOString();
-    // Check required state
     if (!isConnected || !isCorrectNetwork || !raffleId || !finalizationParams) {
       setNetworkError("Cannot proceed: Missing necessary data or connection error.");
       console.error(`[${timestamp}] Pre-check failed for finalize: connected=${isConnected}, correctNetwork=${isCorrectNetwork}, raffleId=${raffleId}, params=${!!finalizationParams}`);
@@ -620,33 +879,28 @@ export function RaffleInterface() {
     setCurrentTxHash(undefined);
 
     try {
-      // Retrieve stored parameters
       const { yHex, proofHex, seedResult } = finalizationParams;
 
-      // Call finalizeRandomness
       console.log(`[${timestamp}] Calling finalizeRandomness with stored parameters...`);
       console.log(`  raffleId: ${raffleId}`);
       console.log(`  yHex: ${yHex}`);
       console.log(`  proofHex:`, proofHex);
       console.log(`  seedResult: ${seedResult}`);
 
-      writeContract({
-         address: SEEDY_COORDINATOR_ADDRESS,
-         abi: SEEDY_COORDINATOR_ABI as Abi,
-         functionName: 'finalizeRandomness',
-         // Use the stored parameters directly
-         args: [raffleId, yHex, proofHex, seedResult]
+      await safeWriteContract({
+        address: SEEDY_COORDINATOR_ADDRESS,
+        abi: SEEDY_COORDINATOR_ABI as Abi,
+        functionName: 'finalizeRandomness',
+        args: [raffleId, yHex, proofHex, seedResult]
       });
-      // Loading state reset is handled by useEffect
-
-    } catch (error) { // Catch errors during writeContract setup
+    } catch (error) {
       console.error(`[${timestamp}] Error preparing handleFinalizeRandomness call:`, error);
       setNetworkError(`Error publishing proof: ${formatError(error)}`); 
-      setIsFinalizingRandomness(false); // Stop loading on error
+      setIsFinalizingRandomness(false);
     }
   };
 
-  // --- Handler for Claiming Winnings ---
+  // Update the claim winnings call
   const handleClaimWinnings = async () => {
     const timestamp = new Date().toISOString();
     if (!isConnected || !isCorrectNetwork || !raffleId || !isRandomnessFinalized) {
@@ -655,8 +909,8 @@ export function RaffleInterface() {
       return;
     }
     if (isClaiming || isFinalizingRandomness) {
-        console.warn(`[${timestamp}] Claim requested while another action is in progress.`);
-        return;
+      console.warn(`[${timestamp}] Claim requested while another action is in progress.`);
+      return;
     }
 
     setIsClaiming(true); 
@@ -664,12 +918,11 @@ export function RaffleInterface() {
     setCurrentTxHash(undefined); 
 
     try {
-      console.log(`[${timestamp}] Calling finalizeBet for raffleId: ${raffleId}...`);
-      writeContract({
-         address: RAFFLE_CONTRACT_ADDRESS,
-         abi: RAFFLE_ABI,
-         functionName: 'finalizeBet',
-         args: [raffleId]
+      await safeWriteContract({
+        address: RAFFLE_CONTRACT_ADDRESS,
+        abi: RAFFLE_ABI,
+        functionName: 'finalizeBet',
+        args: [raffleId]
       });
     } catch (error) {
       console.error(`[${timestamp}] Error preparing finalizeBet call:`, error);
@@ -678,13 +931,11 @@ export function RaffleInterface() {
     }
   };
 
-  // --- Render ---
   return (
     <div className="max-w-2xl mx-auto bg-gray-800 text-gray-200 rounded-xl shadow-2xl p-6 md:p-8 space-y-6 border border-gray-700 relative overflow-hidden">
       {/* Confetti Canvas - Render only on client */}
       {isClientMounted && showConfetti && <Confetti width={windowSize.width} height={windowSize.height} recycle={false} numberOfPieces={500} />}
 
-      {/* Pool Size Display in Header */}
       <div className="text-center mb-4">
         <span className="text-gray-400 text-sm font-medium">Total Pool: </span>
         <span className="font-bold text-xl text-cyan-400 animate-pulse">
@@ -729,9 +980,32 @@ export function RaffleInterface() {
 
       {/* Network Status Banners */}
       {networkError && (
-        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="bg-red-900/80 border border-red-700 rounded-lg p-3 flex items-center space-x-2 text-sm shadow-lg">
+        <motion.div 
+          initial={{ opacity: 0, y: -20 }} 
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-red-900/80 border border-red-700 rounded-lg p-3 flex items-center space-x-2 text-sm shadow-lg"
+        >
           <ExclamationTriangleIcon className="h-5 w-5 text-red-400 flex-shrink-0" />
           <p className="text-red-300 font-medium">{networkError}</p>
+          {isConnected && !isCorrectNetwork && (
+            <button 
+              onClick={async () => {
+                setIsSwitchingNetwork(true);
+                try {
+                  await switchChain({ chainId: baseSepolia.id });
+                } catch (error: unknown) {
+                  console.error("Failed to switch network:", error);
+                  setNetworkError("Failed to switch to Base Sepolia. Please switch manually in your wallet.");
+                } finally {
+                  setIsSwitchingNetwork(false);
+                }
+              }}
+              disabled={isSwitchingNetwork}
+              className="ml-auto bg-red-700 hover:bg-red-600 text-white px-3 py-1 rounded text-xs font-medium transition-colors disabled:opacity-50"
+            >
+              {isSwitchingNetwork ? "Switching..." : "Switch Network"}
+            </button>
+          )}
         </motion.div>
       )}
       
@@ -836,34 +1110,7 @@ export function RaffleInterface() {
 
              {/* Enter Button Area */}
              <motion.button
-               onClick={() => {
-                 if (!isConnected || !isCorrectNetwork) {
-                   setNetworkError("Please connect your wallet.");
-                   return;
-                 }
-                 if (selectedAmount <= 0) {
-                   setNetworkError("Please enter a valid amount to bet.");
-                   return;
-                 }
-                 if (probability < 0.1 || probability > 99.9) {
-                   setNetworkError("Probability must be between 0.1% and 99.9%.");
-                   return;
-                 }
-                 setNetworkError(null);
-                 setIsEntering(true);
-                 setIsSolving(false);
-                 setCurrentTxHash(undefined);
-                 console.log("--- placeBet call ---");
-                 console.log("oddsPermil:", oddsPermil);
-                 // Add the actual contract call
-                 writeContract({
-                   address: RAFFLE_CONTRACT_ADDRESS,
-                   abi: RAFFLE_ABI,
-                   functionName: 'placeBet',
-                   args: [oddsPermil],
-                   value: betAmountParsed
-                 });
-               }}
+               onClick={handlePlaceBet}
                disabled={isLoading || !isConnected || !isCorrectNetwork}
                className={`w-full py-3.5 bg-gradient-to-r from-lime-600 to-green-600 text-white rounded-lg text-lg font-semibold transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed shadow-lg hover:shadow-lime-500/50 flex items-center justify-center space-x-2 ${isLoading ? 'animate-pulse cursor-wait' : 'hover:from-lime-500 hover:to-green-500'}`}
                whileHover={!isLoading ? { scale: 1.02, transition: { duration: 0.2 } } : {}}
@@ -926,143 +1173,7 @@ export function RaffleInterface() {
                     </div>
                  </div>
                  <motion.button
-                   onClick={async () => {
-                     const timestamp = new Date().toISOString();
-                     if (!isConnected || !isCorrectNetwork || !raffleId || !publicClient) {
-                       // Consolidated initial checks
-                       setNetworkError("Cannot proceed: Wallet not connected, wrong network, missing Raffle ID, or connection error.");
-                       console.error(`[${timestamp}] Pre-check failed: connected=${isConnected}, correctNetwork=${isCorrectNetwork}, raffleId=${raffleId}, publicClient=${!!publicClient}`);
-                       return;
-                     }
-
-                     setNetworkError(null);
-                     setIsSolving(true); 
-                     setCurrentTxHash(undefined); 
-
-                     try {
-                        console.log(`[${timestamp}] 1. Fetching VDF parameters for Request ID: ${raffleId.toString()}`);
-                        
-                        // --- Fetch Request Data (T, delta) and Modulus (N) --- 
-                        const [requestData, modulusData] = await Promise.all([
-                          publicClient.readContract({
-                             address: SEEDY_COORDINATOR_ADDRESS,
-                             abi: SEEDY_COORDINATOR_ABI as Abi,
-                             functionName: 'requests',
-                             args: [raffleId]
-                          }),
-                          publicClient.readContract({
-                             address: SEEDY_COORDINATOR_ADDRESS,
-                             abi: SEEDY_COORDINATOR_ABI as Abi,
-                             functionName: 'VDF_MODULUS'
-                          })
-                        ]);
-
-                        if (!requestData || typeof requestData !== 'object' || requestData === null || !Array.isArray(requestData)) {
-                           throw new Error("Invalid request data received from Coordinator contract.");
-                        }
-                        const T_param = requestData[3] as bigint; 
-                        const delta_param = requestData[4] as bigint;
-                        const N_param = bytesInputToBigInt(modulusData as `0x${string}`); 
-
-                        console.log(`[${timestamp}] Fetched Params: T=${T_param}, delta=${delta_param}, N=${N_param}`); 
-                        if (T_param === undefined || delta_param === undefined || N_param === undefined) {
-                           throw new Error("One or more VDF parameters (T, delta, N) are undefined after fetching.");
-                        }
-                        // --- End Fetch --- 
-                        
-                        console.log(`[${timestamp}] 2. Computing seed for Request ID: ${raffleId.toString()}`);
-                        let seedResult = await publicClient.readContract({
-                           address: SEEDY_COORDINATOR_ADDRESS,
-                           abi: SEEDY_COORDINATOR_ABI as Abi,
-                           functionName: 'computeSeed',
-                           args: [raffleId] 
-                        }) as `0x${string}`;
-                        
-                        console.log(`[${timestamp}] Computed Seed Result (x): ${seedResult}`);
-                        seedResult = `0x3a74a92014645ed1a6` as `0x${string}`; //! change
-                        // --- Generate VDF Proof --- 
-                        console.log(`[${timestamp}] 3. Generating VDF Proof... (x=${seedResult}, T=${T_param}, delta=${delta_param}, N=${N_param})`);
-                        const { y, proof: proofBigInts } = await generateProof(seedResult, T_param, delta_param, N_param);
-                        console.log(`[${timestamp}] Proof Generated (bigints): y=${y}, proof=[${proofBigInts.map((p: bigint) => p.toString()).join(', ')}]`);
-                        const yHex = toEvenLengthHex(y); // Convert y to hex
-
-                        // --- Format proof elements to even-length hex strings ---
-                        const proofHex = proofBigInts.map(toEvenLengthHex);
-                        console.log(`[${timestamp}] Proof Formatted (hex):`, proofHex);
-                        // --- End Formatting ---
-
-                        // --- Verify VDF Proof (Client-side check) ---
-                        console.log(`[${timestamp}] 4. Verifying VDF Proof on-chain (read-only)...`);
-
-                        // --- Log parameters BEFORE verification ---
-                        console.log(`[${timestamp}] Parameters for verify function:`);
-                        console.log(`  x (seedResult):`, seedResult);
-                        console.log(`  y:`, yHex);
-                        console.log(`  T (T_param):`, T_param?.toString());
-                        console.log(`  delta (delta_param):`, delta_param?.toString());
-                        console.log(`  proof (proofHex):`, proofHex);
-                        console.log(`  N (modulusData):`, modulusData);
-                        // --- End Log ---
-
-                        try {
-                            const verificationResult = await publicClient.readContract({
-                                address: SEEDY_VERIFIER_ADDRESS,
-                                abi: SEEDY_VERIFIER_ABI as Abi,
-                                functionName: 'verify',
-                                args: [
-                                    seedResult, // x (bytes)
-                                    yHex,          // y (bytes)
-                                    T_param,    // T (uint256)
-                                    delta_param,// delta (uint256)
-                                    proofHex,   // proof (bytes[]) - Pass the formatted hex proof
-                                    modulusData // N (bytes)
-                                ]
-                            });
-                            console.log(`[${timestamp}] Proof Verification Result:`, verificationResult);
-                            let actualY = null;
-                            // --- Extract actualY from verification result ---
-                            if (Array.isArray(verificationResult) && verificationResult.length > 0) {
-                                actualY = verificationResult[0];
-                                console.log(`[${timestamp}] Extracted actualY for hasWon: ${actualY}`);
-                            } else {
-                                throw new Error("Could not extract actual Y value from verification result.");
-                            }
-
-                            // --- Call hasWon on Raffle Contract ---
-                            console.log(`[${timestamp}] 5. Calling hasWon view function...`);
-                            const wonResult = await publicClient.readContract({
-                                address: RAFFLE_CONTRACT_ADDRESS,
-                                abi: RAFFLE_ABI, // Ensure RAFFLE_ABI is correctly typed
-                                functionName: 'hasWon',
-                                args: [raffleId!, actualY] // Pass raffleId and extracted actualY
-                            });
-                            console.log(`[${timestamp}] hasWon Result:`, wonResult);
-                            // --- End hasWon Call ---
-
-                            // --- Store parameters for potential finalization ---
-                            setFinalizationParams({ yHex, proofHex, seedResult });
-                            // --- End Store ---
-
-                            // --- Update State based on hasWon result ---
-                            setRaffleStatus(RaffleStatus.SOLVED); // Set status to Solved
-                            setHasWonResult(wonResult as boolean); // Set the win result state
-                            setIsSolving(false); // Stop loading indicator *after* storing params
-                            // --- End State Update ---
-
-                        } catch (verifyOrHasWonError) { // Catch errors from verification OR hasWon call
-                            console.error(`[${timestamp}] Error during VDF verification or hasWon call:`, verifyOrHasWonError);
-                            setNetworkError(`Error checking win status: ${formatError(verifyOrHasWonError)}`);
-                            setIsSolving(false); // Stop solving state if verification/check fails
-                            return;
-                        }
-                        // --- End Proof Verification and hasWon check ---
-
-                     } catch (outerError) { // Catch errors from initial parameter fetching etc.
-                        console.error(`[${timestamp}] Error during VDF parameter fetch or seed computation:`, outerError);
-                        setNetworkError(`Error preparing check: ${formatError(outerError)}`);
-                        setIsSolving(false); // Reset solving state on outer error
-                     }
-                   }}
+                   onClick={handleSolvePuzzle}
                    className={`w-full max-w-xs mx-auto py-3 bg-blue-600 text-white rounded-lg font-semibold transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center space-x-2 ${isLoading && isSolving ? 'animate-pulse cursor-wait' : 'hover:bg-blue-500'}`}
                    disabled={!isCorrectNetwork || isLoading || isDevModeRaffle}
                    whileHover={!isLoading ? { scale: 1.03 } : {}}
@@ -1200,6 +1311,181 @@ export function RaffleInterface() {
            </div>
           </div>
        )}
+
+      {/* Debug Panel - Hidden by default */}
+      {SHOW_DEBUG_PANEL_BUTTON && (
+        <div className="mt-8 border-t border-gray-700 pt-4">
+          <button 
+            onClick={() => setShowDebugPanel(!showDebugPanel)}
+            className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1 rounded-md transition-colors"
+          >
+            {showDebugPanel ? 'Hide Debug' : 'Show Debug'}
+          </button>
+          
+          {showDebugPanel && (
+            <div className="mt-3 p-3 bg-gray-900 rounded-md border border-gray-700">
+              <div className="flex flex-col space-y-2">
+                <div className="flex space-x-2">
+                  <div className="flex-1">
+                    <label className="block text-xs text-gray-400 mb-1">Raffle ID</label>
+                    <input
+                      type="text"
+                      value={debugRaffleId}
+                      onChange={(e) => setDebugRaffleId(e.target.value)}
+                      placeholder="Enter raffle ID..."
+                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-gray-200 text-sm"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs text-gray-400 mb-1">Seed (optional)</label>
+                    <input
+                      type="text"
+                      value={debugSeed}
+                      onChange={(e) => setDebugSeed(e.target.value)}
+                      placeholder="Enter seed (hex)..."
+                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-md text-gray-200 text-sm"
+                    />
+                  </div>
+                </div>
+                <button
+                  onClick={async () => {
+                    const timestamp = new Date().toISOString();
+                    
+                    if (!debugRaffleId) {
+                      console.error(`[${timestamp}] Debug: Please enter a raffle ID`);
+                      return;
+                    }
+                    
+                    const raffleIdBigInt = BigInt(debugRaffleId);
+                    
+                    if (!isConnected || !isCorrectNetwork || !publicClient) {
+                      console.error(`[${timestamp}] Debug: Pre-check failed: connected=${isConnected}, correctNetwork=${isCorrectNetwork}, publicClient=${!!publicClient}`);
+                      return;
+                    }
+
+                    console.log(`[${timestamp}] Debug: Starting VDF verification for Raffle ID: ${raffleIdBigInt.toString()}`);
+                    
+                    try {
+                      // 1. Fetch VDF parameters
+                      console.log(`[${timestamp}] Debug: 1. Fetching VDF parameters for Request ID: ${raffleIdBigInt.toString()}`);
+                      
+                      const [requestData, modulusData] = await Promise.all([
+                        publicClient.readContract({
+                          address: SEEDY_COORDINATOR_ADDRESS,
+                          abi: SEEDY_COORDINATOR_ABI as Abi,
+                          functionName: 'requests',
+                          args: [raffleIdBigInt]
+                        }),
+                        publicClient.readContract({
+                          address: SEEDY_COORDINATOR_ADDRESS,
+                          abi: SEEDY_COORDINATOR_ABI as Abi,
+                          functionName: 'VDF_MODULUS'
+                        })
+                      ]);
+
+                      if (!requestData || typeof requestData !== 'object' || requestData === null || !Array.isArray(requestData)) {
+                        throw new Error("Invalid request data received from Coordinator contract.");
+                      }
+                      
+                      const T_param = requestData[3] as bigint; 
+                      const delta_param = requestData[4] as bigint;
+                      const N_param = bytesInputToBigInt(modulusData as `0x${string}`); 
+
+                      console.log(`[${timestamp}] Debug: Fetched Params: T=${T_param}, delta=${delta_param}, N=${N_param}`); 
+                      
+                      if (T_param === undefined || delta_param === undefined || N_param === undefined) {
+                        throw new Error("One or more VDF parameters (T, delta, N) are undefined after fetching.");
+                      }
+                      
+                      // 2. Compute seed or use provided seed
+                      let debugSeedResult: `0x${string}`;
+                      
+                      if (debugSeed) {
+                        console.log(`[${timestamp}] Debug: Using provided seed: ${debugSeed}`);
+                        // Ensure the seed has 0x prefix
+                        debugSeedResult = debugSeed.startsWith('0x') ? debugSeed as `0x${string}` : `0x${debugSeed}` as `0x${string}`;
+                      } else {
+                        console.log(`[${timestamp}] Debug: Computing seed for Request ID: ${raffleIdBigInt.toString()}`);
+                        debugSeedResult = await publicClient.readContract({
+                          address: SEEDY_COORDINATOR_ADDRESS,
+                          abi: SEEDY_COORDINATOR_ABI as Abi,
+                          functionName: 'computeSeed',
+                          args: [raffleIdBigInt] 
+                        }) as `0x${string}`;
+                        
+                        console.log(`[${timestamp}] Debug: Computed Seed Result (x): ${debugSeedResult}`);
+                      }
+                      // while (true) {
+                      // 3. Generate VDF Proof
+                      console.log(`[${timestamp}] Debug: 3. Generating VDF Proof... (x=${debugSeedResult}, T=${T_param}, delta=${delta_param}, N=${N_param})`);
+                      const { y: debugY, proof: debugProofBigInts } = await generateProof(debugSeedResult, T_param, delta_param, N_param);
+                      console.log(`[${timestamp}] Debug: Proof Generated (bigints): y=${debugY}, proof=[${debugProofBigInts.map((p: bigint) => p.toString()).join(', ')}]`);
+                      
+                      const yHex = toEvenLengthHex(debugY);
+                      const proofHex = debugProofBigInts.map(toEvenLengthHex);
+                      console.log(`[${timestamp}] Proof Formatted (hex):`, proofHex);
+                      
+                      // 4. Verify VDF Proof
+                      console.log(`[${timestamp}] Debug: 4. Verifying VDF Proof on-chain (read-only)...`);
+                      
+                      console.log(`[${timestamp}] Debug: Parameters for verify function:`);
+                      console.log(`  x (seedResult):`, debugSeedResult);
+                      console.log(`  y:`, yHex);
+                      console.log(`  T (T_param):`, T_param?.toString());
+                      console.log(`  delta (delta_param):`, delta_param?.toString());
+                      console.log(`  proof (proofHex):`, proofHex);
+                      console.log(`  N (modulusData):`, modulusData);
+                      
+                      const verificationResult = await publicClient.readContract({
+                        address: SEEDY_VERIFIER_ADDRESS,
+                        abi: SEEDY_VERIFIER_ABI as Abi,
+                        functionName: 'verify',
+                        args: [
+                          debugSeedResult,
+                          yHex,
+                          T_param,
+                          delta_param,
+                          proofHex,
+                          modulusData
+                        ]
+                      });
+                      
+                      console.log(`[${timestamp}] Debug: Proof Verification Result:`, verificationResult);
+                      
+                      let actualY = null;
+                      if (Array.isArray(verificationResult) && verificationResult.length > 0) {
+                        actualY = verificationResult[0];
+                        console.log(`[${timestamp}] Debug: Extracted actualY for hasWon: ${actualY}`);
+                      } else {
+                        throw new Error("Could not extract actual Y value from verification result.");
+                      }
+                      
+                      
+                      // 5. Check if won
+                      console.log(`[${timestamp}] Debug: 5. Calling hasWon view function...`);
+                      const wonResult = await publicClient.readContract({
+                        address: RAFFLE_CONTRACT_ADDRESS,
+                        abi: RAFFLE_ABI,
+                        functionName: 'hasWon',
+                        args: [raffleIdBigInt, actualY]
+                      });
+                      
+                      console.log(`[${timestamp}] Debug: hasWon Result:`, wonResult);
+                      console.log(`[${timestamp}] Debug: Process completed successfully!`);
+                      
+                    } catch (error) {
+                      console.error(`[${timestamp}] Debug: Error during verification process:`, error);
+                    }
+                  }}
+                  className="w-full bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded-md text-sm transition-colors"
+                >
+                  Debug Action
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 } 
